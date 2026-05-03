@@ -1,0 +1,40 @@
+{
+  "name": "Open Design",
+  "image": "mcr.microsoft.com/devcontainers/javascript-node:1-24-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+  "hostRequirements": {
+    "memory": "8gb"
+  },
+  "forwardPorts": [5175, 7456, 7457],
+  "portsAttributes": {
+    "5175": {
+      "label": "Open Design web",
+      "onAutoForward": "notify"
+    },
+    "7456": {
+      "label": "Open Design daemon",
+      "onAutoForward": "silent"
+    },
+    "7457": {
+      "label": "Open Design daemon alt",
+      "onAutoForward": "silent"
+    }
+  },
+  "postCreateCommand": "corepack enable && corepack prepare pnpm@10.33.2 --activate && npm --cache /tmp/npm-cache install -g @openai/codex && pnpm install",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode"
+      ]
+    }
+  },
+  "remoteEnv": {
+    "OD_HOST": "0.0.0.0",
+    "OD_BIND_HOST": "0.0.0.0",
+    "OD_CODEX_DISABLE_PLUGINS": "1",
+    "NPM_CONFIG_CACHE": "/tmp/npm-cache"
+  }
+}
