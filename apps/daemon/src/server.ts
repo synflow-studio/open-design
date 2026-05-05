@@ -2,7 +2,7 @@
 import express from 'express';
 import multer from 'multer';
 import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -659,11 +659,21 @@ export async function startServer({ port = 7456, host = process.env.OD_BIND_HOST
 
   // Reject cross-origin requests to API endpoints.
   // Health/version remain open for monitoring probes.
-  // Non-browser clients (no Origin header) are always allowed.
+  // Non-browser clients (no Origin header) are trusted only for loopback
+  // daemon binds or loopback peers. When the daemon is bound to a
+  // non-loopback interface (Codespaces, LAN, Tailscale), direct no-Origin
+  // requests must present OD_API_TOKEN.
   app.use('/api', (req, res, next) => {
     const origin = req.headers.origin;
-    // Non-browser client → allow.
-    if (origin == null || origin === '') return next();
+    if (isPublicApiProbe(req)) return next();
+
+    // Non-browser client.
+    if (origin == null || origin === '') {
+      if (isTrustedNoOriginApiRequest(req, host)) return next();
+      return res.status(401).json({
+        error: 'API token required for non-loopback daemon API requests',
+      });
+    }
 
     // Origin: null (sandboxed iframes).  Only allowed for safe, read-only
     // routes that set their own CORS headers for canvas drawing.
@@ -672,6 +682,11 @@ export async function startServer({ port = 7456, host = process.env.OD_BIND_HOST
         req.method === 'GET' && _NULL_ORIGIN_SAFE_GET_RE.test(req.path);
       if (!isSafeReadOnly) {
         return res.status(403).json({ error: 'Origin: null not allowed for this route' });
+      }
+      if (!isTrustedNoOriginApiRequest(req, host)) {
+        return res.status(401).json({
+          error: 'API token required for non-loopback daemon API requests',
+        });
       }
       return next();
     }
@@ -3239,8 +3254,12 @@ export function isLocalSameOrigin(req, port) {
   // Reject unknown Host first (DNS rebinding / Host header attack)
   if (!allowedHosts.has(host)) return false;
 
-  // Non-browser client with valid Host → allow
-  if (origin == null || origin === '') return true;
+  // Non-browser client with valid Host. Loopback remains frictionless for
+  // local dev; non-loopback daemon binds require loopback peer access or an
+  // explicit OD_API_TOKEN.
+  if (origin == null || origin === '') {
+    return isTrustedNoOriginApiRequest(req, bindHost);
+  }
 
   const schemes = ['http', 'https'];
   const allowedOrigins = new Set(
@@ -3250,4 +3269,72 @@ export function isLocalSameOrigin(req, port) {
     ]),
   );
   return allowedOrigins.has(String(origin));
+}
+
+function isPublicApiProbe(req) {
+  return req.method === 'GET' && (req.path === '/health' || req.path === '/version');
+}
+
+function isTrustedNoOriginApiRequest(req, bindHost) {
+  return (
+    isLoopbackBindHost(bindHost) ||
+    isLoopbackRemoteAddress(req.socket?.remoteAddress) ||
+    hasValidApiToken(req)
+  );
+}
+
+function isLoopbackBindHost(host) {
+  const value = normalizeHost(host);
+  return (
+    value === 'localhost' ||
+    value === '127.0.0.1' ||
+    value === '::1' ||
+    value === '[::1]'
+  );
+}
+
+function isLoopbackRemoteAddress(address) {
+  if (!address) return false;
+  const value = normalizeHost(address);
+  return (
+    value === 'localhost' ||
+    value === '::1' ||
+    value === '127.0.0.1' ||
+    value.startsWith('127.') ||
+    value.startsWith('::ffff:127.')
+  );
+}
+
+function normalizeHost(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^\[|\]$/g, '');
+}
+
+function hasValidApiToken(req) {
+  const expected = process.env.OD_API_TOKEN?.trim();
+  if (!expected) return false;
+  const presented = readPresentedApiToken(req);
+  if (!presented) return false;
+  return timingSafeStringEqual(presented, expected);
+}
+
+function readPresentedApiToken(req) {
+  const headerToken = req.headers['x-od-api-token'];
+  if (typeof headerToken === 'string' && headerToken.trim()) {
+    return headerToken.trim();
+  }
+  const auth = req.headers.authorization;
+  if (typeof auth === 'string') {
+    const match = auth.match(/^Bearer\s+(.+)$/i);
+    if (match?.[1]?.trim()) return match[1].trim();
+  }
+  return '';
+}
+
+function timingSafeStringEqual(left, right) {
+  const a = Buffer.from(left);
+  const b = Buffer.from(right);
+  return a.length === b.length && timingSafeEqual(a, b);
 }

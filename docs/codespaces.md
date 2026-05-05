@@ -34,8 +34,33 @@ port that Codespaces reports:
 OD_HOST=0.0.0.0 OD_BIND_HOST=0.0.0.0 OD_CODEX_DISABLE_PLUGINS=1 pnpm tools-dev run web
 ```
 
-Open the forwarded web port shown by Codespaces. The daemon ports are forwarded
-for health checks and app-to-daemon traffic.
+Open the forwarded web port shown by Codespaces. The daemon ports are not
+auto-forwarded; app-to-daemon traffic uses container loopback.
+
+## Security posture
+
+The devcontainer only auto-forwards the web port (`5175`). Daemon ports
+(`7456` / `7457`) are privileged local-control surfaces: they can read and
+write project files and spawn the configured agent. Do not make daemon ports
+public or organization-visible in Codespaces.
+
+When the daemon is bound to `0.0.0.0`, direct `/api` requests without a trusted
+loopback peer are rejected. Non-loopback direct clients must send `OD_API_TOKEN`
+as either:
+
+```bash
+Authorization: Bearer "$OD_API_TOKEN"
+```
+
+or:
+
+```bash
+X-OD-API-Token: "$OD_API_TOKEN"
+```
+
+Health/version probes remain open. If you need to inspect the daemon from a
+Codespace terminal, use `curl http://127.0.0.1:<daemon-port>/api/health` inside
+the Codespace rather than exposing the daemon port.
 
 ## CoastKey sandbox rule
 

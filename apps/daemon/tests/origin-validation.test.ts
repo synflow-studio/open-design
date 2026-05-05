@@ -15,12 +15,25 @@ function createOriginMiddleware(resolvedPort, host = '127.0.0.1') {
     /^\/projects\/[^/]+\/raw\/|^\/codex-pets\/[^/]+\/spritesheet$/;
   return (req, res, next) => {
     const origin = req.headers.origin;
-    if (origin == null || origin === '') return next();
+    if (req.method === 'GET' && (req.path === '/health' || req.path === '/version')) {
+      return next();
+    }
+    if (origin == null || origin === '') {
+      if (isTrustedNoOriginApiRequest(req, host)) return next();
+      return res.status(401).json({
+        error: 'API token required for non-loopback daemon API requests',
+      });
+    }
     if (origin === 'null') {
       const isSafeReadOnly =
         req.method === 'GET' && _NULL_ORIGIN_SAFE_GET_RE.test(req.path);
       if (!isSafeReadOnly) {
         return res.status(403).json({ error: 'Origin: null not allowed for this route' });
+      }
+      if (!isTrustedNoOriginApiRequest(req, host)) {
+        return res.status(401).json({
+          error: 'API token required for non-loopback daemon API requests',
+        });
       }
       return next();
     }
@@ -43,6 +56,67 @@ function createOriginMiddleware(resolvedPort, host = '127.0.0.1') {
     }
     next();
   };
+}
+
+function isTrustedNoOriginApiRequest(req, bindHost) {
+  return (
+    isLoopbackBindHost(bindHost) ||
+    isLoopbackRemoteAddress(
+      // Test-only override so we can exercise forwarded/non-loopback peers
+      // while the local test server itself still listens on 127.0.0.1.
+      req.headers['x-test-remote-address'] || req.socket?.remoteAddress,
+    ) ||
+    hasValidApiToken(req)
+  );
+}
+
+function isLoopbackBindHost(host) {
+  const value = normalizeHost(host);
+  return (
+    value === 'localhost' ||
+    value === '127.0.0.1' ||
+    value === '::1' ||
+    value === '[::1]'
+  );
+}
+
+function isLoopbackRemoteAddress(address) {
+  if (!address) return false;
+  const value = normalizeHost(address);
+  return (
+    value === 'localhost' ||
+    value === '::1' ||
+    value === '127.0.0.1' ||
+    value.startsWith('127.') ||
+    value.startsWith('::ffff:127.')
+  );
+}
+
+function normalizeHost(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^\[|\]$/g, '');
+}
+
+function hasValidApiToken(req) {
+  const expected = process.env.OD_API_TOKEN?.trim();
+  if (!expected) return false;
+  const presented = readPresentedApiToken(req);
+  return Boolean(presented && presented === expected);
+}
+
+function readPresentedApiToken(req) {
+  const headerToken = req.headers['x-od-api-token'];
+  if (typeof headerToken === 'string' && headerToken.trim()) {
+    return headerToken.trim();
+  }
+  const auth = req.headers.authorization;
+  if (typeof auth === 'string') {
+    const match = auth.match(/^Bearer\s+(.+)$/i);
+    if (match?.[1]?.trim()) return match[1].trim();
+  }
+  return '';
 }
 
 function makeTestApp(port, host = '127.0.0.1') {
@@ -320,5 +394,65 @@ describe('origin validation: non-loopback bind host', () => {
       origin: `http://evil.com:${port}`,
     });
     expect(res.status).toBe(403);
+  });
+
+  it('allows no-Origin requests from loopback peers with non-loopback bind host', async () => {
+    const res = await request(port, 'GET', '/api/projects');
+    expect(res.status).toBe(200);
+  });
+
+  it('rejects no-Origin requests from non-loopback peers without OD_API_TOKEN', async () => {
+    const res = await request(port, 'GET', '/api/projects', {
+      headers: { 'x-test-remote-address': '203.0.113.10' },
+    });
+    expect(res.status).toBe(401);
+    expect(JSON.parse(res.body)).toEqual({
+      error: 'API token required for non-loopback daemon API requests',
+    });
+  });
+
+  it('allows public health probes from non-loopback peers without OD_API_TOKEN', async () => {
+    const res = await request(port, 'GET', '/api/health', {
+      headers: { 'x-test-remote-address': '203.0.113.10' },
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it('allows no-Origin non-loopback peers with a valid bearer OD_API_TOKEN', async () => {
+    process.env.OD_API_TOKEN = 'test-token';
+    try {
+      const res = await request(port, 'GET', '/api/projects', {
+        headers: {
+          authorization: 'Bearer test-token',
+          'x-test-remote-address': '203.0.113.10',
+        },
+      });
+      expect(res.status).toBe(200);
+    } finally {
+      delete process.env.OD_API_TOKEN;
+    }
+  });
+
+  it('rejects no-Origin non-loopback peers with an invalid OD_API_TOKEN', async () => {
+    process.env.OD_API_TOKEN = 'test-token';
+    try {
+      const res = await request(port, 'GET', '/api/projects', {
+        headers: {
+          'x-od-api-token': 'wrong-token',
+          'x-test-remote-address': '203.0.113.10',
+        },
+      });
+      expect(res.status).toBe(401);
+    } finally {
+      delete process.env.OD_API_TOKEN;
+    }
+  });
+
+  it('rejects Origin: null raw-file reads from non-loopback peers without OD_API_TOKEN', async () => {
+    const res = await request(port, 'GET', '/api/projects/abc/raw/design.html', {
+      origin: 'null',
+      headers: { 'x-test-remote-address': '203.0.113.10' },
+    });
+    expect(res.status).toBe(401);
   });
 });
