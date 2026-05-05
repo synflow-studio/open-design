@@ -60,6 +60,11 @@ This file is the single source of truth for agents entering this repository. Rea
 ## Git commit policy
 
 - Git commits must not include `Co-authored-by` trailers or any other co-author metadata.
+- This checkout is the Synflow working fork. Treat `origin` as `synflow-studio/open-design`.
+- Treat `upstream` as `nexu-io/open-design` and use it only for fetch/read/update comparison unless the user explicitly asks to contribute upstream.
+- Do not create pull requests against `nexu-io/open-design` unless the user explicitly asks for an upstream contribution.
+- For Synflow sandbox work, push directly to `origin/main` or to an `origin` feature branch as requested; do not create PRs by default.
+- Before any remote git operation, state the target repository and branch.
 
 ## Validation strategy
 
